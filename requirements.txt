@@ -1,0 +1,11 @@
+pandas
+numpy
+scikit-learn
+xgboost
+pulp
+streamlit
+plotly
+pydeck
+watchdog
+joblib
+urllib3<2

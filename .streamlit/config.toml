@@ -1,0 +1,22 @@
+[theme]
+base = "light"
+primaryColor = "#2962FF"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F7FA"
+textColor = "#000000"
+
+[server]
+headless = true
+runOnSave = true
+enableCORS = false
+maxMessageSize = 500
+port = 8501
+
+[client]
+toolbarMode = "minimal"
+showSidebarNavigation = true
+
+[browser]
+gatherUsageStats = false
+serverAddress = "localhost"
+server.headless = true
