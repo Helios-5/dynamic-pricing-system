@@ -1,6 +1,6 @@
 # 🚖 AI-Driven Dynamic Pricing System
 
-A production-grade, AI-powered dynamic pricing engine that adjusts ride-sharing fares in real-time based on demand, supply, weather, and contextual factors. The system combines an **XGBoost Regressor** for price prediction with a **soft-constraint Linear Program** (PuLP) for revenue-optimised fare adjustment.
+A production-grade, AI-powered dynamic pricing engine that adjusts ride-sharing fares in real-time based on demand, supply, weather, and contextual factors. The system combines an **Random Forest Regressor** (with a Linear Regression baseline) for revenue-optimised fare adjustment.
 
 ## 🚀 Features
 
