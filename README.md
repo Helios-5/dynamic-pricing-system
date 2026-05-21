@@ -1,6 +1,6 @@
 # 🚖 AI-Driven Dynamic Pricing System
 
-A production-grade, AI-powered dynamic pricing engine that adjusts ride-sharing fares in real-time based on demand, supply, weather, and contextual factors. The system combines an **XGBoost Regressor** for price prediction with a **soft-constraint Linear Program** (PuLP) for revenue-optimised fare adjustment.
+A production-grade, AI-powered dynamic pricing engine that adjusts ride-sharing fares in real-time based on demand, supply, weather, and contextual factors. The system combines an **Random Forest Regressor** (with a Linear Regression baseline) for revenue-optimised fare adjustment.
 
 ## 🚀 Features
 
@@ -12,7 +12,7 @@ A production-grade, AI-powered dynamic pricing engine that adjusts ride-sharing 
 - **Interactive Dashboard** – Premium **Streamlit** UI with:
   - Live PyDeck scatter-map of ride demand.
   - Real-time KPI metrics (Demand Ratio, Utilisation, Predicted Surge, Optimised Surge).
-  - Gauge chart, 24H trend lines, price-sensitivity curve, and XGBoost feature-importance chart.
+  - Gauge chart, 24H trend lines, price-sensitivity curve, and RF feature-importance chart (shown when Random Forest wins the RMSE comparison).
 - **Dual Data Mode** – Train on **Synthetic Data** (generated on-the-fly) or **Real-world CSV** (India market data or generic sample).
 - **Container-Ready** – Docker + Docker Compose with `PYTHONUNBUFFERED=1` for real-time log streaming.
 
@@ -84,7 +84,7 @@ dynamic-pricing-system/
 │   ├── data_access.py      # Config loading, CSV resolution, coord imputation, filtering
 │   ├── features.py         # Feature engineering + stochastic target generation
 │   ├── generator.py        # Vectorised synthetic data generator
-│   ├── model.py            # XGBoost training, inference, persistence
+│   ├── model.py            # RF/LR training, best-of-two RMSE selection, inference, persistence
 │   └── optimization.py     # Soft-constraint LP optimisation
 ├── tests/
 ├── Dockerfile
@@ -103,6 +103,46 @@ dynamic-pricing-system/
    - **Hard constraint**: Trust region (±30% of ML prediction) – always satisfiable.
 5. **Data Access** – `data_access.py` loads `config.yaml`, resolves CSV paths, imputes missing coordinates, and filters DataFrames. Zero business logic in `app.py`.
 6. **Visualisation** – `app.py` renders the final price and all insights via Streamlit.
+
+## 🗺️ Architecture Diagram
+
+The diagram below shows the end-to-end data flow — from raw simulation all the
+way through to the Streamlit dashboard that a pricing ops team sees.
+
+```mermaid
+flowchart TD
+    A(["🗄️ Data Source"])
+    A --> B1["📊 Synthetic Generator\ngenerator.py\n─────────────────────\nVectorised ride requests\nacross time · location · weather"]
+    A --> B2["📂 Real-world CSV\nIndia / Sample dataset\n─────────────────────\nUploaded or path-configured\nvia config.yaml / env vars"]
+
+    B1 --> C
+    B2 --> C
+
+    C["⚙️ Feature Engineering\nfeatures.py\n─────────────────────────────────\ndemand_ratio · is_peak_hour\nis_rainy · is_city_center · is_weekend\nprice_multiplier target + Gaussian noise σ=0.05"]
+
+    C --> D["🤖 Model Training & Selection\nmodel.py\n────────────────────────────────────\nTrain RandomForestRegressor + LinearRegression\non same 80/20 holdout split\nKeep winner with lower test RMSE"]
+
+    D --> E1["🌲 Random Forest\n(wins on complex,\nnon-linear data)\n→ exposes feature_importances_"]
+    D --> E2["📈 Linear Regression\n(wins on small or\nlinearly separable data)\n→ fast · interpretable"]
+
+    E1 --> F
+    E2 --> F
+
+    F["🔧 LP Optimisation\noptimization.py  ·  PuLP + CBC\n──────────────────────────────────────────\nObjective: max price − penalty_util·s_util − penalty_ret·s_ret\nSoft constraints absorb utilisation > 0.9\nand retention < 0.8 via slack variables\nTrust region: ±30% of ML prediction"]
+
+    F --> G["✅ Optimised Surge Multiplier\n∈ [1.0×, 5.0×]"]
+
+    G --> H["📊 Streamlit Dashboard\napp.py\n──────────────────────────────\nLive PyDeck map · KPI cards\nGauge · 24H trends\nPrice-sensitivity curve\nRF feature-importance chart"]
+
+    style A fill:#1e293b,stroke:#64748b,color:#f1f5f9
+    style C fill:#0f172a,stroke:#3b82f6,color:#93c5fd
+    style D fill:#0f172a,stroke:#8b5cf6,color:#c4b5fd
+    style E1 fill:#052e16,stroke:#22c55e,color:#86efac
+    style E2 fill:#052e16,stroke:#22c55e,color:#86efac
+    style F fill:#1c0533,stroke:#a855f7,color:#e9d5ff
+    style G fill:#042f2e,stroke:#14b8a6,color:#99f6e4
+    style H fill:#1e293b,stroke:#f59e0b,color:#fde68a
+```
 
 ## 📄 License
 
