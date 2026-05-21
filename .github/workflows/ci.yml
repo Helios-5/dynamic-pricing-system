@@ -1,4 +1,4 @@
-name: CI — Lint, Test & Docker Verify
+name: CI Pipeline
 
 # ---------------------------------------------------------------------------
 # When this pipeline runs.
@@ -10,9 +10,9 @@ name: CI — Lint, Test & Docker Verify
 # ---------------------------------------------------------------------------
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "develop" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "develop" ]
 
 # Cancel any in-progress CI run for the same PR when a new commit is pushed.
 # Without this, you'd burn GitHub Actions minutes running obsolete checks on
@@ -30,7 +30,7 @@ jobs:
   # We install pytest separately (not in requirements.txt) because it's a dev
   # dependency — there's no reason to ship it in the production Docker image.
   # ---------------------------------------------------------------------------
-  lint-and-test:
+  test-and-build:
     name: "Lint & Test (Python 3.10)"
     runs-on: ubuntu-latest
 
@@ -62,6 +62,9 @@ jobs:
         # --cov-report=term-missing prints uncovered lines inline so
         # contributors can see exactly what they've missed without opening
         # a separate HTML report.
+        env:
+          # This tells Pytest to treat the 'src' directory as the root for imports
+          PYTHONPATH: src
         run: |
           pytest \
             --cov=src \

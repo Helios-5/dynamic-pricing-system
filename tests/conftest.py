@@ -17,10 +17,13 @@ fixture is all that's needed — the tests themselves don't need to change.
 
 import sys
 import os
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 import pytest
+
+from features import create_features
 
 # ---------------------------------------------------------------------------
 # Ensure the src/ directory is on the Python path.
@@ -92,15 +95,21 @@ def raw_ride_df() -> pd.DataFrame:
 
 
 @pytest.fixture
-def featured_df(raw_ride_df) -> pd.DataFrame:
+def featured_df():
     """
-    A feature-engineered version of raw_ride_df, ready for model training.
+    Provides a deterministic, pre-engineered DataFrame for model testing.
+    With 12 rows, it is small enough to force the Random Forest to overfit
+    and the Linear Regression to win, which is perfect for testing the
+    baseline fallback logic.
+    """
+    df = pd.DataFrame({
+        "requests": [100, 50, 200, 10, 150, 80, 300, 40, 120, 90, 250, 60],
+        "drivers": [10, 10, 20, 10, 15, 10, 30, 10, 12, 10, 25, 10],
+        "weather": ["Clear", "Rainy"] * 6,
+        "location_name": ["City Center", "Suburbs"] * 6,
+        "timestamp": [datetime(2023, 1, 1, 9, 0)] * 12
+    })
 
-    Most model and optimization tests need features already computed — this
-    fixture saves them from calling create_features() themselves and keeps
-    test failures localized.  If test_features.py starts failing, the model
-    tests should still give useful signal, not also fail due to a shared
-    setup step.
-    """
-    from features import create_features
-    return create_features(raw_ride_df)
+    # Run it through the feature pipeline so the model has the exact
+    # columns it expects (demand_ratio, is_rainy, price_multiplier, etc.)
+    return create_features(df)
