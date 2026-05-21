@@ -133,7 +133,7 @@ jobs:
       - name: Verify Docker Container Health
         run: |
             # Run the container in detached mode
-            docker run -d -p 8501:8501 --name pricing-app dynamic-pricing-app:latest
+            docker run -d -p 8501:8501 --name pricing-app pricing-system:ci
             
             # Wait for Streamlit to boot up (retry every 2 seconds, up to 10 times)
             echo "Waiting for Streamlit healthcheck..."
