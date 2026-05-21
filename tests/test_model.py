@@ -36,7 +36,7 @@ import pytest
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 
-from src.model import (
+from model import (
     FEATURES,
     TARGET,
     train_model,
