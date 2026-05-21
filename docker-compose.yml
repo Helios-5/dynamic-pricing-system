@@ -7,5 +7,20 @@ services:
     volumes:
       - .:/app
     environment:
+      # ── Python runtime ──────────────────────────────────────────────────
+      # Disable output buffering so logs stream in real-time to `docker logs`.
       - PYTHONUNBUFFERED=1
+
+      # ── Configuration overrides (optional) ─────────────────────────────
+      # These mirror the keys in config.yaml and take precedence over them.
+      # Uncomment and set values to override defaults without rebuilding.
+
+      # Default map centre (used when data has no coordinates)
+      # - PRICING_DEFAULT_LAT=28.6
+      # - PRICING_DEFAULT_LON=77.2
+
+      # Override data file paths (relative to /app inside the container)
+      # - PRICING_INDIA_CSV_PATH=data/india_ride_data.csv
+      # - PRICING_SAMPLE_CSV_PATH=data/sample_ride_data.csv
+
     restart: unless-stopped
