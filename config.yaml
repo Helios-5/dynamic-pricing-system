@@ -1,0 +1,41 @@
+# config.yaml
+# -----------
+# Central configuration for the AI-Driven Dynamic Pricing System.
+#
+# All values here can be overridden at runtime via environment variables
+# (see README.md → Configuration section for the full mapping table).
+# The application reads this file once at startup via src/data_access.py.
+
+# ── Data Paths ────────────────────────────────────────────────────────────────
+# Paths are relative to the project root (where docker-compose.yml lives).
+# Override with env vars: PRICING_INDIA_CSV_PATH, PRICING_SAMPLE_CSV_PATH
+data_paths:
+  india_csv: "data/india_ride_data.csv"
+  sample_csv: "data/sample_ride_data.csv"
+
+# ── Map / Coordinate Fallbacks ────────────────────────────────────────────────
+# Used by data_access.impute_coordinates() when a dataset is missing lat/lon
+# columns.  Keys must match location_name values in the source data.
+#
+# Override default centre-point with env vars:
+#   PRICING_DEFAULT_LAT   (float)
+#   PRICING_DEFAULT_LON   (float)
+location_fallbacks:
+  "City Center": [28.6139, 77.2090]   # Connaught Place, Delhi
+  "Suburbs":     [28.5355, 77.3910]   # Noida sector
+  "Airport":     [28.5562, 77.1000]   # IGI Airport, Delhi
+  "Mall":        [28.5244, 77.2188]   # Select City Walk area
+  "Tech Park":   [28.4950, 77.0895]   # Gurgaon Cyber City
+
+# Default coordinates used when location_name has no entry in the map above.
+default_lat: 28.6
+default_lon: 77.2
+
+# ── Optimisation Hyperparameters ──────────────────────────────────────────────
+# Penalty weights for the soft-constraint LP objective:
+#   Maximise:  price - (penalty_utilization * slack_util) - (penalty_retention * slack_ret)
+#
+# Higher weight → stricter enforcement of that business constraint.
+optimization:
+  penalty_utilization: 10.0
+  penalty_retention: 8.0

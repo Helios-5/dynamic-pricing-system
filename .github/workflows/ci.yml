@@ -1,0 +1,172 @@
+name: CI — Lint, Test & Docker Verify
+
+# ---------------------------------------------------------------------------
+# When this pipeline runs.
+#
+# We trigger on push and pull_request to main.  The PR trigger is the
+# important one — it gives every contributor a green/red signal before
+# their code merges.  The push trigger catches anything that lands directly
+# (hotfixes, admin pushes) and keeps the main branch status badge accurate.
+# ---------------------------------------------------------------------------
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+# Cancel any in-progress CI run for the same PR when a new commit is pushed.
+# Without this, you'd burn GitHub Actions minutes running obsolete checks on
+# every intermediate commit during an active review.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Job 1: Lint & Test
+  #
+  # Installs the project's Python dependencies and runs the full pytest suite.
+  # We install pytest separately (not in requirements.txt) because it's a dev
+  # dependency — there's no reason to ship it in the production Docker image.
+  # ---------------------------------------------------------------------------
+  lint-and-test:
+    name: "Lint & Test (Python 3.10)"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          # Cache pip downloads so repeated runs don't re-download scikit-learn
+          # and friends on every push.  The cache key includes the hash of
+          # requirements.txt so it invalidates correctly when deps change.
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - name: Install production dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install test dependencies
+        # pytest and pytest-cov live here so they stay out of requirements.txt
+        # (and therefore out of the production Docker image).
+        run: pip install pytest pytest-cov
+
+      - name: Run pytest suite
+        # Run from the project root so pytest.ini is picked up automatically.
+        # --cov=src generates a coverage report for the src/ directory.
+        # --cov-report=term-missing prints uncovered lines inline so
+        # contributors can see exactly what they've missed without opening
+        # a separate HTML report.
+        run: |
+          pytest \
+            --cov=src \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            -v
+
+      - name: Upload coverage report as artifact
+        # The XML report can be consumed by third-party coverage services
+        # (Codecov, Coveralls) or stored as a build artifact for historical
+        # tracking.  We upload it unconditionally — even on test failure —
+        # so partial coverage data is still available for debugging.
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Docker Build & Verify
+  #
+  # Builds the production Docker image and verifies that Streamlit starts
+  # successfully by polling the built-in health check endpoint.
+  #
+  # Why a separate job?  Because a broken Dockerfile is a deployment blocker
+  # even if all unit tests pass.  Keeping this separate means:
+  # - The lint-and-test job doesn't need Docker, so it runs faster.
+  # - A Docker build failure is clearly visible as its own job, not buried
+  #   in test output.
+  # - We can skip Docker checks on documentation-only PRs in the future
+  #   using path filters.
+  # ---------------------------------------------------------------------------
+  docker-build-and-verify:
+    name: "Docker Build & Health Check"
+    runs-on: ubuntu-latest
+    # Run this job in parallel with lint-and-test.  Both jobs start at the
+    # same time — no need to wait for tests to pass before building Docker.
+    # If tests fail, both jobs fail and the PR is blocked either way.
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        # We tag it locally as 'pricing-system:ci' so the subsequent run
+        # step can reference it by name.  We don't push it to a registry here
+        # because this is just a build verification — not a deployment.
+        run: |
+          docker build \
+            --tag pricing-system:ci \
+            --file Dockerfile \
+            .
+
+      - name: Start container in the background
+        # We don't actually need Streamlit to finish loading for the health
+        # check — we just need the HTTP server to accept connections.
+        # Streamlit typically takes 3-5 seconds to start, hence the sleep.
+        run: |
+          docker run \
+            --detach \
+            --name pricing-ci-container \
+            --publish 8501:8501 \
+            pricing-system:ci
+
+      - name: Wait for Streamlit to become ready
+        # Give Streamlit enough time to load the app.  15 seconds is
+        # conservative — it usually takes 5-8 seconds.  If we poll too
+        # early, we'll get a connection refused and falsely fail the check.
+        run: sleep 15
+
+      - name: Verify Streamlit health check endpoint responds
+        # Streamlit exposes /_stcore/health which returns HTTP 200 when the
+        # app is fully loaded.  We retry up to 5 times with a 3-second wait
+        # between retries to handle cold-start variance.
+        # --fail makes curl return a non-zero exit code on HTTP errors (4xx/5xx)
+        # so the step fails correctly if the server is up but returning errors.
+        run: |
+          for i in $(seq 1 5); do
+            echo "Health check attempt $i/5..."
+            if curl --fail --silent --max-time 10 http://localhost:8501/_stcore/health; then
+              echo ""
+              echo "✅ Streamlit is healthy."
+              exit 0
+            fi
+            echo "Not ready yet — waiting 3 seconds..."
+            sleep 3
+          done
+          echo "❌ Streamlit health check failed after 5 attempts."
+          docker logs pricing-ci-container
+          exit 1
+
+      - name: Print container logs (always, for debugging)
+        # Print logs regardless of whether the health check passed or failed.
+        # If the health check passes, this is a brief summary.  If it fails,
+        # this is the primary debugging artifact — much more useful than just
+        # seeing 'curl: (7) Failed to connect'.
+        if: always()
+        run: docker logs pricing-ci-container
+
+      - name: Stop and remove the test container
+        # Clean up after ourselves.  The container would be discarded when the
+        # runner terminates anyway, but explicit cleanup is good hygiene and
+        # prevents port conflicts if the workflow is re-run on the same runner.
+        if: always()
+        run: |
+          docker stop pricing-ci-container || true
+          docker rm  pricing-ci-container || true
