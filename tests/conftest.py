@@ -23,7 +23,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src.features import create_features
+from features import create_features
 
 # ---------------------------------------------------------------------------
 # Ensure the src/ directory is on the Python path.

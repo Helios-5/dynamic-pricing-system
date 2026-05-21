@@ -130,26 +130,6 @@ jobs:
             --publish 8501:8501 \
             pricing-system:ci
 
-      - name: Verify Docker Container Health
-        run: |
-            # Run the container in detached mode
-            docker run -d -p 8501:8501 --name pricing-app pricing-system:ci
-            
-            # Wait for Streamlit to boot up (retry every 2 seconds, up to 10 times)
-            echo "Waiting for Streamlit healthcheck..."
-            for i in {1..10}; do
-              if curl --silent --fail http://localhost:8501/_stcore/health > /dev/null; then
-                echo "Container is healthy!"
-                exit 0
-              fi
-              echo "Attempt $i failed. Waiting 2 seconds..."
-              sleep 2
-            done
-            
-            echo "Container failed to become healthy."
-            docker logs pricing-app
-            exit 1
-
       - name: Wait for Streamlit to become ready
         # Give Streamlit enough time to load the app.  15 seconds is
         # conservative — it usually takes 5-8 seconds.  If we poll too
