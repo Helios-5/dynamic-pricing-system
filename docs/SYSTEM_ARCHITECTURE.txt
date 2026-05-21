@@ -3,52 +3,129 @@ SYSTEM ARCHITECTURE
 
 1. Overview
 -----------
-The Dynamic Pricing System is a Python-based application that simulates and optimizes ride-sharing fares in real-time. It uses Machine Learning (Random Forest) for price prediction and Linear Programming (PuLP) for constraint-based optimization.
+The AI-Driven Dynamic Pricing System is a production-grade Python application
+that simulates and optimises ride-sharing fares in real time. It uses a
+Random Forest Regressor (with a Linear Regression baseline) for price
+prediction and a soft-constraint Linear Program (PuLP + CBC solver) for
+revenue-optimised fare adjustment. The architecture enforces strict separation
+of concerns: UI, data access, feature engineering, modelling, and optimisation
+are fully decoupled modules.
 
 2. Components
 -------------
 
-A. Data Generation Layer (src/generator.py, scripts/generate_data.py)
-   - Purpose: Creates synthetic ride request data.
-   - Logic: Uses NumPy vectorization for high-performance generation of timestamp, location, weather, and demand patterns.
-   - Outputs: CSV files (e.g., data/india_ride_data.csv) or in-memory DataFrames.
-   - Optimization: Capable of generating 100,000+ rows in sub-second time.
+A. Configuration Layer (config.yaml, src/data_access.py)
+   - config.yaml: Central YAML file holding all tuneable parameters —
+     location fallback coordinates, CSV data paths, and LP penalty weights.
+     No magic numbers appear in source code.
+   - Environment variable overrides: PRICING_DEFAULT_LAT, PRICING_DEFAULT_LON,
+     PRICING_INDIA_CSV_PATH, PRICING_SAMPLE_CSV_PATH take precedence over
+     config.yaml at runtime (useful for Docker deployments).
 
-B. Feature Engineering (src/features.py)
+B. Data Generation Layer (src/generator.py, scripts/generate_data.py)
+   - Purpose: Creates synthetic ride-request data using NumPy vectorisation.
+   - Logic: Generates correlated timestamp, location, weather, demand, and
+     supply patterns. Capable of 100,000+ rows in sub-second time.
+   - Outputs: In-memory DataFrames or CSV files (data/*.csv).
+
+C. Data Access Layer (src/data_access.py)
+   - Purpose: Single point of truth for all data-loading, path resolution,
+     coordinate imputation, and DataFrame filtering logic.
+   - Key functions:
+       get_config()              – Loads and caches config.yaml; applies env overrides.
+       get_location_fallback_map() – Returns name→(lat,lon) coordinate map.
+       resolve_data_path(key)    – Returns absolute Path to a named CSV file.
+       impute_coordinates(df)    – Injects lat/lon when columns are missing.
+       filter_dataframe(df, ...) – Filters by city and area search term.
+   - Isolation: src/app.py imports only from this module for data concerns.
+
+D. Feature Engineering (src/features.py)
    - Purpose: Transforms raw ride data into ML-ready features.
-   - Features: demand_ratio, is_peak_hour, is_rainy, is_weekend, etc.
+   - Features: demand_ratio, is_peak_hour, is_rainy, is_city_center, is_weekend,
+     time_slot (categorical), hour, day_of_week.
+   - Target variable: price_multiplier = deterministic business rule
+     + Gaussian noise (μ=0, σ=0.05), clipped to [1.0, 5.0].
+     The stochastic component prevents the model from memorising a hard-coded
+     formula and simulates real-world market variance.
 
-C. Modeling Layer (src/model.py)
-   - Algorithm: Random Forest Regressor.
-   - Training: Predicts a 'price_multiplier' based on features.
-   - Persistence: Saves trained models as .joblib files.
+E. Modelling Layer (src/model.py)
+   - Algorithms: Two candidates are trained on every run:
+       1. RandomForestRegressor (primary) — 200 trees, max_depth=12,
+          min_samples_leaf=5. Handles non-linear feature interactions
+          naturally and provides feature_importances_ for the dashboard.
+       2. LinearRegression (baseline) — vanilla OLS, no regularisation.
+          Kept as a sanity check; wins on very small or nearly-linear
+          datasets where RF would overfit.
+   - Selection: Both models are evaluated on the same 80/20 holdout split.
+     The model with lower RMSE is returned as the "winner" and used for
+     inference. The winner name, both RMSE values, and feature importances
+     are included in the returned metrics dict.
+   - Feature importances: Only available when RF wins. Linear Regression
+     coefficients are intentionally not exposed as importances (they would
+     be misleading without proper scaling context).
+   - Persistence: Trained models saved as .joblib files (model_csv.joblib,
+     model_synthetic.joblib). Loaded via @st.cache_resource in app.py.
 
-D. Optimization Layer (src/optimization.py)
-   - Algorithm: Linear Programming (PuLP).
-   - Objective: Maximize revenue/price while satisfying constraints.
-   - Constraints:
-     1. Customer Retention >= threshold.
-     2. Driver Utilization <= threshold.
-     3. Trust Region: Price must be close to ML prediction.
+F. Optimisation Layer (src/optimization.py)
+   - Algorithm: Linear Programming (PuLP, CBC solver).
+   - Objective (Soft-Constraint formulation):
+       Maximise:  price
+                  − penalty_util * slack_util
+                  − penalty_ret  * slack_ret
+   - Soft constraints (never cause infeasibility):
+       slack_util ≥ (utilisation after pricing) − UTIL_TARGET(0.9)
+       slack_ret  ≥ RET_TARGET(0.8) − (retention after pricing)
+       Both slack variables ≥ 0; violations incur a cost, not failure.
+   - Hard constraint (always satisfiable):
+       Trust region: ML_price × 0.70 ≤ price ≤ ML_price × 1.30
+   - Logging: All solver events logged via Python's logging module.
+     Non-optimal outcomes logged at WARNING level; exceptions at ERROR level.
+   - Penalty weights sourced from config.yaml → optimization section.
 
-E. Application Layer (src/app.py)
-   - Framework: Streamlit.
-   - Caching: Uses @st.cache_data and @st.cache_resource for performance with large datasets.
-   - Data Source: Can toggle between Real-time Simulation and Static CSV Data (100k rows).
-   - Visualization: PyDeck for maps, Plotly for charts.
+G. Application Layer (src/app.py)
+   - Framework: Streamlit (single-page, multi-tab layout).
+   - Responsibility: UI rendering ONLY. No business logic, no data imputation,
+     no hardcoded coordinates.
+   - Caching: @st.cache_data (CSV loading) and @st.cache_resource (model).
+   - Visualisation: PyDeck scatter map, Plotly gauge + line + area + bar charts.
+   - Logging: Configured at module level (logging.basicConfig); all modules
+     use standard logging so Docker log streaming works correctly.
 
 3. Data Flow
 ------------
-1. User configures parameters (or loads CSV).
-2. Generator creates/loads raw data -> Features.py adds columns.
-3. Model.py predicts "Base Surge".
-4. Optimization.py adjusts Surge to "Optimized Surge".
-5. App.py displays Map, Metrics, and Charts.
+1. Startup:     data_access.get_config() loads config.yaml once (LRU-cached).
+2. User input:  Sidebar controls set data source, time, weather, n_requests.
+3. Data:        generator.py or data_access._load_csv() → raw DataFrame.
+4. Filtering:   data_access.filter_dataframe() applies city / area filters.
+5. Coordinates: data_access.impute_coordinates() ensures lat/lon columns exist.
+6. Features:    features.create_features() adds ML columns + stochastic target.
+7. Inference:   model.py RandomForestRegressor (or LinearRegression) predicts
+                price_multiplier. Winner selected by lower test RMSE.
+8. Optimisation: optimization.optimize_price() runs soft-constraint LP.
+9. Display:     app.py renders metrics, map, and charts.
 
-4. Directory Structure
+4. Containerisation
+-------------------
+- Dockerfile:        ENV PYTHONUNBUFFERED=1 ensures logs stream to Docker console.
+                     config.yaml copied as explicit COPY step.
+- docker-compose.yml: PYTHONUNBUFFERED=1 set as environment variable.
+                      Commented-out env-var overrides provided for operators.
+
+5. Directory Structure
 ----------------------
-- src/: Core logic modules.
-- scripts/: CLI utilities.
-- data/: CSV datasets.
-- tests/: Unit tests.
-- docs/: Documentation.
+dynamic-pricing-system/
+├── config.yaml          ← Central configuration
+├── data/                ← CSV datasets
+├── docs/                ← Documentation
+├── scripts/             ← CLI utilities
+├── src/
+│   ├── app.py           ← Streamlit UI (routing + rendering only)
+│   ├── data_access.py   ← Config, CSV loading, imputation, filtering
+│   ├── features.py      ← Feature engineering + stochastic target
+│   ├── generator.py     ← Synthetic data generation
+│   ├── model.py         ← RF + LR training, best-of-two selection, persistence
+│   └── optimization.py  ← Soft-constraint LP optimisation
+├── tests/
+├── Dockerfile
+├── docker-compose.yml
+└── requirements.txt

@@ -1,26 +1,58 @@
-import streamlit as st
-import pandas as pd
+"""
+app.py
+------
+Streamlit UI entry point for the AI-Driven Dynamic Pricing System.
+
+Responsibilities (this file only):
+  • Streamlit page configuration and CSS theming.
+  • Sidebar controls and user-input collection.
+  • Routing between data sources (synthetic / CSV).
+  • Rendering metrics, charts, and the live map.
+
+All data-loading, coordinate imputation, DataFrame filtering, and
+business-logic helpers live in ``src/data_access.py``.
+All ML training/inference lives in ``src/model.py``.
+All optimisation lives in ``src/optimization.py``.
+"""
+
+import logging
+import os
+from datetime import datetime
+
 import numpy as np
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import pydeck as pdk
-from datetime import datetime, timedelta
-import time
-import os
+import streamlit as st
 
-# Import our modules
-from generator import generate_synthetic_data
+from data_access import (
+    filter_dataframe,
+    impute_coordinates,
+    resolve_data_path,
+)
 from features import create_features
-from model import train_model, load_model, save_model
+from generator import generate_synthetic_data
+from model import FEATURES, load_model, save_model, train_model
 from optimization import optimize_price
 
+# ── Logging setup ─────────────────────────────────────────────────────────────
+# Streamlit does not call __main__, so configure logging here once.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s – %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+# ── Page configuration ────────────────────────────────────────────────────────
 st.set_page_config(page_title="AI Dynamic Pricing", layout="wide", page_icon="💎")
 
-# --- Professional UI CSS ---
+# ── Professional UI CSS ───────────────────────────────────────────────────────
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-    
+
     :root {
         --white: #ffffff;
         --off-white: #f8f9fa;
@@ -33,66 +65,50 @@ st.markdown("""
         --blue-light: #d0e7ff;
         --shadow: rgba(0, 0, 0, 0.1);
     }
-    
-    * {
-        transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
-    }
-    
+
+    * { transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease; }
+
     .main {
         background: var(--white);
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
         color: var(--black);
     }
-    
+
     .stSidebar {
         background: linear-gradient(180deg, #f8f9fa 0%, #e9ecef 100%);
         border-right: 3px solid var(--blue);
     }
-    
+
     .stSidebar [data-testid="stMarkdownContainer"] p,
-    .stSidebar label {
-        color: var(--black) !important;
-        font-weight: 500;
-        font-size: 0.9rem;
-    }
-    
-    .stSidebar h1, .stSidebar h2, .stSidebar h3 {
-        color: var(--blue) !important;
-    }
-    
+    .stSidebar label { color: var(--black) !important; font-weight: 500; font-size: 0.9rem; }
+
+    .stSidebar h1, .stSidebar h2, .stSidebar h3 { color: var(--blue) !important; }
+
     /* Metric Cards */
     [data-testid="stMetric"] {
         background: var(--white);
         padding: 1.75rem 1.5rem;
         border-radius: 16px;
         border: 2px solid var(--light-grey);
-        box-shadow: 0 4px 12px var(--shadow), 0 1px 3px rgba(0, 0, 0, 0.05);
+        box-shadow: 0 4px 12px var(--shadow), 0 1px 3px rgba(0,0,0,.05);
         position: relative;
         overflow: hidden;
     }
-    
     [data-testid="stMetric"]::before {
         content: '';
         position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
+        top: 0; left: 0; right: 0;
         height: 4px;
         background: linear-gradient(90deg, var(--blue), var(--cyan));
         opacity: 0;
         transition: opacity 0.3s;
     }
-    
-    [data-testid="stMetric"]:hover::before {
-        opacity: 1;
-    }
-    
+    [data-testid="stMetric"]:hover::before { opacity: 1; }
     [data-testid="stMetric"]:hover {
         transform: translateY(-4px);
         border-color: var(--blue);
-        box-shadow: 0 8px 24px rgba(13, 110, 253, 0.15), 0 4px 8px var(--shadow);
+        box-shadow: 0 8px 24px rgba(13,110,253,.15), 0 4px 8px var(--shadow);
     }
-    
     [data-testid="stMetricLabel"] {
         color: var(--grey) !important;
         font-size: 0.85rem !important;
@@ -100,42 +116,29 @@ st.markdown("""
         text-transform: uppercase;
         letter-spacing: 0.05em;
     }
-    
     [data-testid="stMetricValue"] {
         font-size: 2.25rem !important;
         font-weight: 800 !important;
         font-family: 'Inter', sans-serif;
         color: var(--black);
     }
-    
     [data-testid="stMetric"]:nth-child(1) [data-testid="stMetricValue"] {
         background: linear-gradient(135deg, var(--blue) 0%, var(--cyan) 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
     }
-    
     [data-testid="stMetric"]:nth-child(2) [data-testid="stMetricValue"] {
         background: linear-gradient(135deg, #0d6efd 0%, #6ea8fe 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
     }
-    
     [data-testid="stMetric"]:nth-child(3) [data-testid="stMetricValue"] {
         background: linear-gradient(135deg, var(--cyan) 0%, #6edff6 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
     }
-    
     [data-testid="stMetric"]:nth-child(4) [data-testid="stMetricValue"] {
         background: linear-gradient(135deg, #495057 0%, var(--grey) 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
     }
-    
+
     /* Typography */
     h1 {
         font-family: 'Inter', sans-serif;
@@ -147,7 +150,6 @@ st.markdown("""
         border-bottom: 4px solid var(--blue);
         padding-bottom: 0.75rem;
     }
-    
     h2 {
         font-family: 'Inter', sans-serif;
         font-weight: 700;
@@ -157,7 +159,6 @@ st.markdown("""
         margin-bottom: 1rem;
         letter-spacing: -0.01em;
     }
-    
     h3 {
         font-family: 'Inter', sans-serif;
         font-weight: 600;
@@ -165,7 +166,7 @@ st.markdown("""
         color: var(--dark-grey);
         letter-spacing: 0.01em;
     }
-    
+
     /* Tabs */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
@@ -174,7 +175,6 @@ st.markdown("""
         border-radius: 12px;
         border: 2px solid var(--light-grey);
     }
-    
     .stTabs [data-baseweb="tab"] {
         height: 48px;
         background: var(--white);
@@ -185,21 +185,19 @@ st.markdown("""
         padding: 0 24px;
         border: 2px solid var(--light-grey);
     }
-    
     .stTabs [data-baseweb="tab"]:hover {
         background: var(--blue-light);
         color: var(--blue);
         border-color: var(--blue);
     }
-    
     .stTabs [aria-selected="true"] {
         background: linear-gradient(135deg, var(--blue), var(--cyan));
         color: white !important;
         border-color: var(--blue);
-        box-shadow: 0 4px 12px rgba(13, 110, 253, 0.25);
+        box-shadow: 0 4px 12px rgba(13,110,253,.25);
     }
-    
-    /* Input Fields */
+
+    /* Inputs */
     .stTextInput input, .stSelectbox select, .stTextArea textarea {
         background: var(--white) !important;
         border: 2px solid var(--light-grey) !important;
@@ -208,13 +206,12 @@ st.markdown("""
         padding: 0.75rem 1rem;
         font-size: 0.95rem;
     }
-    
     .stTextInput input:focus, .stSelectbox select:focus, .stTextArea textarea:focus {
         border-color: var(--blue) !important;
-        box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.1) !important;
+        box-shadow: 0 0 0 3px rgba(13,110,253,.1) !important;
         outline: none;
     }
-    
+
     /* Buttons */
     .stButton button {
         background: linear-gradient(135deg, var(--blue) 0%, var(--cyan) 100%);
@@ -224,16 +221,15 @@ st.markdown("""
         padding: 0.75rem 1.75rem;
         font-weight: 700;
         font-size: 0.95rem;
-        box-shadow: 0 4px 12px rgba(13, 110, 253, 0.3);
+        box-shadow: 0 4px 12px rgba(13,110,253,.3);
         letter-spacing: 0.02em;
     }
-    
     .stButton button:hover {
         transform: translateY(-2px);
-        box-shadow: 0 6px 20px rgba(13, 110, 253, 0.4);
+        box-shadow: 0 6px 20px rgba(13,110,253,.4);
         background: linear-gradient(135deg, #0b5ed7 0%, #0bb5d4 100%);
     }
-    
+
     /* Alerts */
     .stAlert {
         background: var(--off-white);
@@ -243,70 +239,24 @@ st.markdown("""
         padding: 1rem 1.25rem;
         color: var(--black);
     }
-    
-    .stSuccess {
-        border-left-color: #198754;
-        background: #d1e7dd;
-    }
-    
-    .stWarning {
-        border-left-color: #ffc107;
-        background: #fff3cd;
-    }
-    
-    .stError {
-        border-left-color: #dc3545;
-        background: #f8d7da;
-    }
-    
-    .stInfo {
-        border-left-color: var(--cyan);
-        background: #cff4fc;
-    }
-    
-    /* Radio & Checkboxes */
-    .stRadio > label, .stCheckbox > label {
-        color: var(--black) !important;
-        font-weight: 600;
-    }
-    
-    .stRadio [role="radiogroup"] label,
-    .stCheckbox [role="checkbox"] + div {
-        color: var(--dark-grey) !important;
-    }
-    
+    .stSuccess { border-left-color: #198754; background: #d1e7dd; }
+    .stWarning { border-left-color: #ffc107; background: #fff3cd; }
+    .stError   { border-left-color: #dc3545; background: #f8d7da; }
+    .stInfo    { border-left-color: var(--cyan); background: #cff4fc; }
+
     /* Sliders */
-    .stSlider {
-        padding: 1rem 0;
-    }
-    
-    .stSlider > label {
-        color: var(--black) !important;
-        font-weight: 600;
-    }
-    
+    .stSlider { padding: 1rem 0; }
+    .stSlider > label { color: var(--black) !important; font-weight: 600; }
+
     /* Selectbox */
-    .stSelectbox label {
-        color: var(--black);
-        font-weight: 600;
-    }
-    
-    /* Markdown & Text */
-    .stMarkdown {
-        color: var(--dark-grey);
-    }
-    
-    p, li, span {
-        color: var(--dark-grey);
-    }
-    
-    /* Dividers */
-    hr {
-        border-color: var(--light-grey);
-        margin: 2rem 0;
-    }
-    
-    /* Code blocks */
+    .stSelectbox label { color: var(--black); font-weight: 600; }
+
+    /* Markdown */
+    .stMarkdown { color: var(--dark-grey); }
+    p, li, span { color: var(--dark-grey); }
+
+    hr { border-color: var(--light-grey); margin: 2rem 0; }
+
     code {
         background: var(--off-white);
         color: var(--blue);
@@ -314,53 +264,35 @@ st.markdown("""
         border-radius: 4px;
         border: 1px solid var(--light-grey);
     }
-    
+
     pre {
         background: var(--off-white);
         border: 1px solid var(--light-grey);
         border-radius: 8px;
     }
-    
-    /* Dataframes & Tables */
+
     .stDataFrame {
         background: var(--white);
         border: 2px solid var(--light-grey);
         border-radius: 12px;
     }
-    
-    .stDataFrame [data-testid="stDataFrameResizable"] {
-        background: var(--white);
-    }
-    
-    /* Expander */
+
     .stExpander {
         background: var(--white);
         border: 1px solid var(--light-grey);
         border-radius: 10px;
     }
-    
-    .stExpander [data-testid="stExpanderToggleIcon"] {
-        color: var(--blue);
-    }
-    
-    /* File Uploader */
+
     .stFileUploader {
         background: var(--off-white);
         border: 2px dashed var(--light-grey);
         border-radius: 10px;
     }
-    
-    /* Progress bar */
+
     .stProgress > div > div {
         background: linear-gradient(90deg, var(--blue), var(--cyan));
     }
-    
-    /* Spinner */
-    .stSpinner > div {
-        border-color: var(--blue);
-    }
-    
-    /* Container spacing */
+
     .block-container {
         padding-top: 2.5rem;
         padding-bottom: 2.5rem;
@@ -369,200 +301,210 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-@st.cache_data
-def load_data(use_csv, data_source):
-    if use_csv:
-        if data_source == "Indian Market Data (CSV)" and os.path.exists("data/india_ride_data.csv"):
-             return pd.read_csv("data/india_ride_data.csv")
-        elif os.path.exists("data/sample_ride_data.csv"):
-            return pd.read_csv("data/sample_ride_data.csv")
-        else:
-            return None
-    return None
 
-@st.cache_resource
-def get_model(use_csv=False, data_source="Synthetic Simulation"):
+# ── Cached data / model helpers ───────────────────────────────────────────────
+
+@st.cache_data(show_spinner=False)
+def _load_csv(data_key: str) -> pd.DataFrame | None:
+    """Load a CSV data file by config key (``'india_csv'`` or ``'sample_csv'``)."""
+    path = resolve_data_path(data_key)
+    if path is None:
+        return None
+    logger.info("Loading CSV from %s", path)
+    df = pd.read_csv(path)
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+    return df
+
+
+@st.cache_resource(show_spinner=False)
+def _get_model(use_csv: bool, data_source: str):
+    """Load a cached model, or train one if no persisted file exists."""
     model_path = "model_csv.joblib" if use_csv else "model_synthetic.joblib"
-    
+
     if os.path.exists(model_path):
+        logger.info("Loading persisted model from %s", model_path)
         return load_model(model_path)
-    else:
-        with st.spinner(f"Training model ({'CSV' if use_csv else 'Synthetic'})..."):
-            try:
-                if use_csv:
-                    df = load_data(use_csv, data_source)
-                    if df is None:
-                        st.error("Data file not found.")
-                        return None
 
-                    df['timestamp'] = pd.to_datetime(df['timestamp'])
-                    # Ensure columns exist
-                    if 'traffic' not in df.columns: df['traffic'] = 'High' # Default for India
-                else:
-                    df = generate_synthetic_data(n_samples=2000)
-                
-                df = create_features(df)
-                model, metrics = train_model(df)
-                save_model(model, model_path)
-                return model
-            except Exception as e:
-                st.error(f"Error during model training: {e}")
-                return None
+    with st.spinner(f"Training Random Forest model ({'CSV' if use_csv else 'Synthetic'})…"):
+        try:
+            if use_csv:
+                data_key = "india_csv" if "Indian" in data_source else "sample_csv"
+                df = _load_csv(data_key)
+                if df is None:
+                    st.error("Data file not found. Check config.yaml → data_paths.")
+                    return None
+                if "traffic" not in df.columns:
+                    df["traffic"] = "High"
+            else:
+                df = generate_synthetic_data(n_samples=2000)
 
-def main():
+            df = create_features(df)
+            model, metrics = train_model(df)
+            save_model(model, model_path)
+            logger.info("Model trained and saved: %s", metrics)
+            return model
+        except Exception as exc:
+            st.error(f"Error during model training: {exc}")
+            logger.exception("Model training failed.")
+            return None
+
+
+# ── Main application ──────────────────────────────────────────────────────────
+
+def main() -> None:  # noqa: C901  (complexity tolerated for a single UI entry point)
     st.title("AI-Driven Dynamic Pricing System")
     st.markdown("### Intelligent Fare Optimization Engine")
-    
-    # Sidebar Controls
+
+    # ── Sidebar ───────────────────────────────────────────────────────────────
     with st.sidebar:
         st.header("Configuration")
-        
-        # Data Source Selector
-        # Data Source Selector
-        data_source = st.radio("Training Data Source", ["Synthetic Simulation", "Real Data (CSV)", "Indian Market Data (CSV)"])
-        use_csv = (data_source in ["Real Data (CSV)", "Indian Market Data (CSV)"])
-        
+
+        data_source = st.radio(
+            "Training Data Source",
+            ["Synthetic Simulation", "Real Data (CSV)", "Indian Market Data (CSV)"],
+        )
+        use_csv = data_source in ["Real Data (CSV)", "Indian Market Data (CSV)"]
+
         if use_csv:
-            st.success("Using `data/sample_ride_data.csv`")
-        
+            key = "india_csv" if "Indian" in data_source else "sample_csv"
+            path = resolve_data_path(key)
+            if path:
+                st.success(f"Using `{path.name}`")
+            else:
+                st.warning("CSV file not found – check `config.yaml`.")
+
         st.divider()
-        
         st.header("Simulation Control")
-        
         st.subheader("Contextual Factors")
-        # Time of Day Slider
+
         time_of_day = st.slider("Time of Day (24h)", 0, 23, 18)
         weather = st.selectbox("Weather Condition", ["Clear", "Rainy", "Foggy"])
-        event_status = st.selectbox("Event Status", ["None", "Concert", "Sports", "Festival"])
-        
+        event_status = st.selectbox(
+            "Event Status", ["None", "Concert", "Sports", "Festival"]
+        )
+
         st.subheader("Market Dynamics")
         n_requests = st.slider("Active Requests", 10, 300, 120)
-        
         st.info("Adjust sliders to simulate different market conditions.")
 
-    # Generate "Real-time" Context
+    # ── Data preparation ──────────────────────────────────────────────────────
     current_date = datetime.now().replace(hour=time_of_day, minute=0, second=0)
-    
-    # Data Generation
-    selected_city = "All" # Default value
-    search_area = "" # Default value
-    if data_source == "Indian Market Data (CSV)" and os.path.exists("data/india_ride_data.csv"):
-        # Load a sample from the Indian dataset for visualization
-        df_full = load_data(True, data_source)
-        # Filter for a specific city if needed, or just take a random sample
-        # Let's add a city selector for the map if Indian data is active
-        with st.sidebar:
-            st.subheader("Location Filter")
-            selected_city = st.selectbox("Select City", ["All", "Delhi", "Mumbai", "Bangalore"])
-            search_area = st.text_input("Search Area", placeholder="e.g., Connaught Place")
-        
-        # Apply filters to full dataset
-        if search_area:
-            # Case-insensitive search
-            df_sim = df_full[df_full['location_name'].str.contains(search_area, case=False, na=False)]
-            if df_sim.empty:
-                st.sidebar.warning(f"No data found for '{search_area}'. Showing random sample.")
-                if selected_city != "All":
-                    df_sim = df_full[df_full['city'] == selected_city].sample(n=min(n_requests, len(df_full[df_full['city'] == selected_city])))
-                else:
-                    df_sim = df_full.sample(n=min(n_requests, len(df_full)))
-            else:
-                st.sidebar.success(f"Found {len(df_sim)} rides in '{search_area}'")
-                # If too many results, sample down to n_requests to keep UI snappy, unless n_requests is small
-                if len(df_sim) > n_requests:
-                    df_sim = df_sim.sample(n=n_requests)
-        elif selected_city != "All":
-            df_sim = df_full[df_full['city'] == selected_city].sample(n=min(n_requests, len(df_full[df_full['city'] == selected_city])))
-        else:
-            df_sim = df_full.sample(n=min(n_requests, len(df_full)))
-            
-        # Ensure timestamp is datetime
-        df_sim['timestamp'] = pd.to_datetime(df_sim['timestamp'])
-            
-        # Coordinate Check & Fallback (Bug Fix)
-        if 'latitude' not in df_sim.columns or 'longitude' not in df_sim.columns:
-                st.warning("⚠️ Dataset missing coordinates. Injecting default locations.")
-                loc_map = {
-                "City Center": (28.6139, 77.2090),
-                "Suburbs": (28.5355, 77.3910),
-                "Airport": (28.5562, 77.1000),
-                "Mall": (28.5244, 77.2188),
-                "Tech Park": (28.4950, 77.0895)
-                }
-                # Simple random assignment if unknown
-                df_sim['latitude'] = df_sim['location_name'].map(lambda x: loc_map.get(x, (28.6, 77.2))[0])
-                df_sim['longitude'] = df_sim['location_name'].map(lambda x: loc_map.get(x, (28.6, 77.2))[1])
-                # Add noise
-                df_sim['latitude'] += np.random.normal(0, 0.01, len(df_sim))
-                df_sim['longitude'] += np.random.normal(0, 0.01, len(df_sim))
-            
-        # Ensure we have lat/long (Validation)
-        if 'latitude' not in df_sim.columns:
-            st.error("Indian data missing coordinates.")
+
+    selected_city = "All"
+    search_area = ""
+
+    if data_source == "Indian Market Data (CSV)":
+        df_full = _load_csv("india_csv")
+
+        if df_full is None:
+            st.error("Indian Market CSV not found. Falling back to synthetic data.")
             df_sim = generate_synthetic_data(n_samples=n_requests, start_date=current_date)
+            df_sim["weather"] = weather
+            df_sim["event"] = event_status
+        else:
+            with st.sidebar:
+                st.subheader("Location Filter")
+                selected_city = st.selectbox(
+                    "Select City", ["All", "Delhi", "Mumbai", "Bangalore"]
+                )
+                search_area = st.text_input(
+                    "Search Area", placeholder="e.g., Connaught Place"
+                )
+
+            df_sim, status_msg = filter_dataframe(
+                df_full,
+                city=selected_city,
+                search_area=search_area,
+                n_requests=n_requests,
+            )
+
+            if status_msg:
+                if status_msg.startswith("⚠️"):
+                    st.sidebar.warning(status_msg)
+                else:
+                    st.sidebar.success(status_msg)
+
+            df_sim = impute_coordinates(df_sim)
+
+    elif use_csv:
+        df_full = _load_csv("sample_csv")
+        if df_full is None:
+            st.error("Sample CSV not found. Falling back to synthetic data.")
+            df_sim = generate_synthetic_data(n_samples=n_requests, start_date=current_date)
+            df_sim["weather"] = weather
+            df_sim["event"] = event_status
+        else:
+            df_sim, _ = filter_dataframe(df_full, n_requests=n_requests)
+            df_sim = impute_coordinates(df_sim)
     else:
-        # Default synthetic generation
         df_sim = generate_synthetic_data(n_samples=n_requests, start_date=current_date)
-        df_sim['weather'] = weather
-        df_sim['event'] = event_status
-    
-    # Feature Engineering
+        df_sim["weather"] = weather
+        df_sim["event"] = event_status
+
+    # ── Feature engineering & inference ──────────────────────────────────────
     df_features = create_features(df_sim)
-    
-    # Model Inference
-    model = get_model(use_csv=use_csv, data_source=data_source)
-    
+
+    model = _get_model(use_csv=use_csv, data_source=data_source)
     if model is None:
-        st.error("Failed to load or train the model. Please check the logs.")
+        st.error("Failed to load or train the model. Check the logs.")
         return
-    
-    # Representative Data (City Center)
-    city_center_data = df_features[df_features['location_name'] == 'City Center']
-    row = city_center_data.iloc[0] if not city_center_data.empty else df_features.iloc[0]
-        
-    input_data = pd.DataFrame([row])
-    input_data = input_data[['demand_ratio', 'is_rainy', 'is_peak_hour', 'is_city_center', 'is_weekend']]
-    
-    predicted_multiplier = model.predict(input_data)[0]
-    
-    # Optimization
-    current_utilization = min(1.0, row['demand_ratio'])
+
+    city_center_rows = df_features[df_features["location_name"] == "City Center"]
+    representative_row = (
+        city_center_rows.iloc[0] if not city_center_rows.empty else df_features.iloc[0]
+    )
+
+    input_df = pd.DataFrame([representative_row])[FEATURES]
+    predicted_multiplier: float = float(model.predict(input_df)[0])
+
+    current_utilization = min(1.0, float(representative_row["demand_ratio"]))
     optimized_multiplier = optimize_price(predicted_multiplier, current_utilization)
-    
-    
-    # Top Metrics Row
+
+    # ── Top metrics row ───────────────────────────────────────────────────────
     col1, col2, col3, col4 = st.columns(4)
-    
     with col1:
-        st.metric("Avg Demand Ratio", f"{row['demand_ratio']:.2f}", delta="High" if row['demand_ratio'] > 1.2 else "Normal")
+        dr = representative_row["demand_ratio"]
+        st.metric(
+            "Avg Demand Ratio",
+            f"{dr:.2f}",
+            delta="High" if dr > 1.2 else "Normal",
+        )
     with col2:
-        st.metric("Driver Utilization", f"{current_utilization*100:.1f}%", delta_color="inverse")
+        st.metric(
+            "Driver Utilization",
+            f"{current_utilization * 100:.1f}%",
+            delta_color="inverse",
+        )
     with col3:
         st.metric("AI Predicted Surge", f"{predicted_multiplier:.2f}x")
     with col4:
         delta = optimized_multiplier - predicted_multiplier
-        st.metric("Optimized Surge", f"{optimized_multiplier:.2f}x", delta=f"{delta:.2f}", delta_color="normal")
+        st.metric(
+            "Optimized Surge",
+            f"{optimized_multiplier:.2f}x",
+            delta=f"{delta:.2f}",
+            delta_color="normal",
+        )
 
+    # ── Tabs ──────────────────────────────────────────────────────────────────
+    tab1, tab2, tab3 = st.tabs(["🗺️ Live Map", "📊 Analytics & Insights", "🤖 Model Performance"])
 
-    # Tabs for different views
-    tab1, tab2, tab3 = st.tabs(["Live Map", "Analytics & Insights", "Model Performance"])
-    
+    # ── Tab 1: Live Map ───────────────────────────────────────────────────────
     with tab1:
         c1, c2 = st.columns([3, 1])
+
         with c1:
-            # Map Style Selector
-            map_style = st.selectbox("Map Style", ["Light", "Dark", "Satellite", "Road"], index=0)
-            
+            map_style = st.selectbox(
+                "Map Style", ["Light", "Dark", "Satellite", "Road"], index=0
+            )
             map_styles = {
                 "Light": "light",
                 "Dark": "dark",
                 "Satellite": "satellite",
-                "Road": "road"
+                "Road": "road",
             }
-            
 
-            
-            # PyDeck Map
             layer = pdk.Layer(
                 "ScatterplotLayer",
                 df_sim,
@@ -571,114 +513,154 @@ def main():
                 get_radius=100,
                 pickable=True,
             )
-            
-            # Determine View State based on data
-            if not df_sim.empty:
-                mid_lat = df_sim['latitude'].mean()
-                mid_long = df_sim['longitude'].mean()
-                # Zoom in if searching or a specific city is selected
-                if search_area:
-                    zoom_level = 14
-                elif selected_city != "All":
-                    zoom_level = 12
-                else:
-                    zoom_level = 10
+
+            if not df_sim.empty and "latitude" in df_sim.columns:
+                mid_lat = df_sim["latitude"].mean()
+                mid_lon = df_sim["longitude"].mean()
+                zoom = 14 if search_area else (12 if selected_city != "All" else 10)
             else:
-                mid_lat = 28.6139
-                mid_long = 77.2090
-                zoom_level = 10
+                from data_access import get_default_coords
+                mid_lat, mid_lon = get_default_coords()
+                zoom = 10
 
             view_state = pdk.ViewState(
                 latitude=mid_lat,
-                longitude=mid_long,
-                zoom=zoom_level,
+                longitude=mid_lon,
+                zoom=zoom,
                 pitch=50,
             )
-            
-            st.pydeck_chart(pdk.Deck(
-                map_style=map_styles[map_style],
-                layers=[layer],
-                initial_view_state=view_state,
-                tooltip={
-                    "html": "<b>{location_name}</b><br/>"
+
+            st.pydeck_chart(
+                pdk.Deck(
+                    map_style=map_styles[map_style],
+                    layers=[layer],
+                    initial_view_state=view_state,
+                    tooltip={
+                        "html": (
+                            "<b>{location_name}</b><br/>"
                             "Requests: {requests}<br/>"
                             "Drivers: {drivers}<br/>"
                             "Weather: {weather}<br/>"
-                            "Base Fare: {base_fare}<br/>",
-                    "style": {
-                        "backgroundColor": "steelblue",
-                        "color": "white"
-                    }
-                }
-            ))
-        
+                            "Base Fare: {base_fare}<br/>"
+                        ),
+                        "style": {"backgroundColor": "steelblue", "color": "white"},
+                    },
+                )
+            )
+
         with c2:
             st.markdown("#### Pricing Decision")
-            
-            # Gauge Chart for Surge
-            fig_gauge = go.Figure(go.Indicator(
-                mode = "gauge+number",
-                value = optimized_multiplier,
-                domain = {'x': [0, 1], 'y': [0, 1]},
-                title = {'text': "Surge Multiplier"},
-                gauge = {
-                    'axis': {'range': [1, 5]},
-                    'bar': {'color': "#FF4B4B"},
-                    'steps': [
-                        {'range': [1, 1.5], 'color': "lightgreen"},
-                        {'range': [1.5, 2.5], 'color': "yellow"},
-                        {'range': [2.5, 5], 'color': "red"}],
-                }
-            ))
+
+            fig_gauge = go.Figure(
+                go.Indicator(
+                    mode="gauge+number",
+                    value=optimized_multiplier,
+                    domain={"x": [0, 1], "y": [0, 1]},
+                    title={"text": "Surge Multiplier"},
+                    gauge={
+                        "axis": {"range": [1, 5]},
+                        "bar": {"color": "#FF4B4B"},
+                        "steps": [
+                            {"range": [1, 1.5], "color": "lightgreen"},
+                            {"range": [1.5, 2.5], "color": "yellow"},
+                            {"range": [2.5, 5], "color": "red"},
+                        ],
+                    },
+                )
+            )
             fig_gauge.update_layout(height=250, margin=dict(l=10, r=10, t=30, b=10))
             st.plotly_chart(fig_gauge, use_container_width=True)
-            
-            st.info(f"Base Fare: ₹{row['base_fare']}")
-            st.success(f"Final Fare: ₹{row['base_fare'] * optimized_multiplier:.2f}")
 
+            base_fare = representative_row.get("base_fare", 100)
+            st.info(f"Base Fare: ₹{base_fare}")
+            st.success(f"Final Fare: ₹{base_fare * optimized_multiplier:.2f}")
+
+    # ── Tab 2: Analytics & Insights ───────────────────────────────────────────
     with tab2:
         col_a, col_b = st.columns(2)
-        
+
         with col_a:
             st.subheader("Demand vs Supply Trend (Simulated)")
-            # Simulate a 24h trend
             hours = list(range(24))
-            demand_trend = [50 + 20*np.sin(h/24 * 2*np.pi) + np.random.normal(0, 5) for h in hours]
-            supply_trend = [40 + 15*np.sin(h/24 * 2*np.pi) + np.random.normal(0, 5) for h in hours]
-            
-            df_trend = pd.DataFrame({"Hour": hours, "Demand": demand_trend, "Supply": supply_trend})
-            fig_trend = px.line(df_trend, x="Hour", y=["Demand", "Supply"], title="24H Market Trend")
+            rng = np.random.default_rng()
+            demand_trend = [
+                50 + 20 * np.sin(h / 24 * 2 * np.pi) + rng.normal(0, 5)
+                for h in hours
+            ]
+            supply_trend = [
+                40 + 15 * np.sin(h / 24 * 2 * np.pi) + rng.normal(0, 5)
+                for h in hours
+            ]
+            df_trend = pd.DataFrame(
+                {"Hour": hours, "Demand": demand_trend, "Supply": supply_trend}
+            )
+            fig_trend = px.line(
+                df_trend, x="Hour", y=["Demand", "Supply"], title="24H Market Trend"
+            )
             st.plotly_chart(fig_trend, use_container_width=True)
-            
+
         with col_b:
             st.subheader("Price Sensitivity Analysis")
-            # Show how price changes with demand ratio
             ratios = np.linspace(0.5, 3.0, 50)
-            prices = [1.0 + max(0, (r - 1.5) * 0.5) for r in ratios] # Simple logic replication
+            prices = [1.0 + max(0, (r - 1.5) * 0.5) for r in ratios]
             df_sens = pd.DataFrame({"Demand Ratio": ratios, "Price Multiplier": prices})
-            fig_sens = px.area(df_sens, x="Demand Ratio", y="Price Multiplier", title="Surge Logic Curve")
+            fig_sens = px.area(
+                df_sens,
+                x="Demand Ratio",
+                y="Price Multiplier",
+                title="Surge Logic Curve",
+            )
             st.plotly_chart(fig_sens, use_container_width=True)
 
+    # ── Tab 3: Model Performance ──────────────────────────────────────────────
     with tab3:
         st.subheader("Model Diagnostics")
-        
-        # We need to re-train or load metrics to show them here
-        # For performance, we'll just re-calculate on a small batch or store them
-        # Let's generate a fresh batch for validation
-        df_val = generate_synthetic_data(n_samples=500)
-        df_val = create_features(df_val)
-        
-        # Get feature importance from the model (if available)
+
+        # The model might be a RandomForestRegressor (which has feature_importances_)
+        # or a LinearRegression (which doesn't — it has coefficients instead, but
+        # those aren't comparable to importance scores and would mislead stakeholders
+        # if we displayed them as a bar chart). So we only show the chart when RF won.
         if hasattr(model, "feature_importances_"):
-            feat_imp = pd.DataFrame({
-                "Feature": ['demand_ratio', 'is_rainy', 'is_peak_hour', 'is_city_center', 'is_weekend'],
-                "Importance": model.feature_importances_
-            }).sort_values(by="Importance", ascending=False)
-            
-            fig_imp = px.bar(feat_imp, x="Importance", y="Feature", orientation='h', title="Feature Importance")
-            st.plotly_chart(fig_imp)
-        
-        st.write("Note: Model is retrained periodically on new data.")
+            feat_imp = (
+                pd.DataFrame(
+                    {"Feature": FEATURES, "Importance": model.feature_importances_}
+                )
+                .sort_values("Importance", ascending=False)
+            )
+            fig_imp = px.bar(
+                feat_imp,
+                x="Importance",
+                y="Feature",
+                orientation="h",
+                title="Feature Importance (Random Forest — Mean Decrease in Impurity)",
+                color="Importance",
+                color_continuous_scale="Blues",
+            )
+            fig_imp.update_layout(showlegend=False)
+            st.plotly_chart(fig_imp, use_container_width=True)
+        else:
+            st.info(
+                "The Linear Regression baseline won this training run. "
+                "Feature importances are not available for linear models "
+                "(coefficients serve a different purpose and aren't shown here "
+                "to avoid misleading comparisons). Retrain on a larger dataset "
+                "to likely restore the Random Forest as winner."
+            )
+
+        st.markdown(
+            """
+            **Notes**
+            - The model is a **Random Forest Regressor** (or LinearRegression
+              baseline if RF underperformed on this dataset). Both are trained
+              each session; the lower-RMSE model is used for inference.
+            - The optimization layer uses a **soft-constraint Linear Program**
+              (PuLP + CBC solver). Violations of utilization/retention targets
+              incur a penalty cost rather than making the LP infeasible.
+            - Penalty weights are configurable in `config.yaml` →
+              `optimization` section — no redeploy needed.
+            """
+        )
+
 
 if __name__ == "__main__":
     main()
