@@ -1,4 +1,4 @@
-name: CI — Lint, Test & Docker Verify
+name: CI Pipeline
 
 # ---------------------------------------------------------------------------
 # When this pipeline runs.
@@ -10,9 +10,9 @@ name: CI — Lint, Test & Docker Verify
 # ---------------------------------------------------------------------------
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "develop" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "develop" ]
 
 # Cancel any in-progress CI run for the same PR when a new commit is pushed.
 # Without this, you'd burn GitHub Actions minutes running obsolete checks on
@@ -30,7 +30,7 @@ jobs:
   # We install pytest separately (not in requirements.txt) because it's a dev
   # dependency — there's no reason to ship it in the production Docker image.
   # ---------------------------------------------------------------------------
-  lint-and-test:
+  test-and-build:
     name: "Lint & Test (Python 3.10)"
     runs-on: ubuntu-latest
 
@@ -62,6 +62,9 @@ jobs:
         # --cov-report=term-missing prints uncovered lines inline so
         # contributors can see exactly what they've missed without opening
         # a separate HTML report.
+        env:
+          # This tells Pytest to treat the 'src' directory as the root for imports
+          PYTHONPATH: src
         run: |
           pytest \
             --cov=src \
@@ -126,6 +129,26 @@ jobs:
             --name pricing-ci-container \
             --publish 8501:8501 \
             pricing-system:ci
+
+      - name: Verify Docker Container Health
+        run: |
+            # Run the container in detached mode
+            docker run -d -p 8501:8501 --name pricing-app dynamic-pricing-app:latest
+            
+            # Wait for Streamlit to boot up (retry every 2 seconds, up to 10 times)
+            echo "Waiting for Streamlit healthcheck..."
+            for i in {1..10}; do
+              if curl --silent --fail http://localhost:8501/_stcore/health > /dev/null; then
+                echo "Container is healthy!"
+                exit 0
+              fi
+              echo "Attempt $i failed. Waiting 2 seconds..."
+              sleep 2
+            done
+            
+            echo "Container failed to become healthy."
+            docker logs pricing-app
+            exit 1
 
       - name: Wait for Streamlit to become ready
         # Give Streamlit enough time to load the app.  15 seconds is
